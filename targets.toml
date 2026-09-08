@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Termin Alarm — watched services
+#
+#  Every [targets.<key>] block is one bookable service on one eTermin portal.
+#  <key> is what you pass to --target and is used in log output.
+#
+#  How to find the values for a new office:
+#    1. Open the portal booking page and pick the service you want.
+#    2. Open DevTools → Network and watch the request to /api/timeslots.
+#    3. portal_id  = the path segment after etermin.net/
+#       service_id = the "serviceid" query parameter
+#       duration   = the "duration" query parameter
+#       app_future = the "appfuture" query parameter (booking horizon, workdays)
+#       account_id = the "z" parameter of the POST to /site (optional)
+#  See docs/adding-a-target.md for a walkthrough with screenshots of the values.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[defaults]
+base_url = "https://www.etermin.net"
+
+# ── Duisburg, immigration office south — residence permit ────────────────────
+[targets.niederlassungserlaubnis]
+name       = "Niederlassungserlaubnis - Duisburg, ABH Sued"
+portal_id  = "qtermin-stadt-duisburg-abh-sued"
+account_id = "71400"
+service_id = 389113
+duration   = 20
+app_future = 42          # booking horizon in working days
+info_url   = "https://www.duisburg.de/microsites/auslaenderbehoerde/index.php"
+
+# ── Duisburg, driving licence authority ──────────────────────────────────────
+[targets.fahrerlaubnis]
+name         = "Fahrerlaubnis - Stadt Duisburg"
+portal_id    = "qterminstadtduisburgstva"
+service_id   = 110023
+duration     = 0
+app_future   = 14
+app_deadline = 15
+info_url     = "https://www.duisburg.de/allgemein/fachbereiche/terminvereinbarung-fahrerlaubnis"
+
+# Only alert for slots that actually fit the calendar. Drop the whole block to
+# be told about everything.
+[targets.fahrerlaubnis.filters]
+weekdays      = ["mon", "tue", "wed", "thu", "fri"]
+earliest_time = "08:00"
+latest_time   = "15:30"

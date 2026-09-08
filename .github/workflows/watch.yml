@@ -1,0 +1,79 @@
+name: Watch for appointments
+
+on:
+  schedule:
+    # Every 15 minutes, 06:00-16:00 UTC, Mon-Fri (07:00-18:00 German time).
+    # Slots released by an office are often gone within minutes.
+    - cron: '*/15 6-16 * * 1-5'
+
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target key to check (blank = every enabled target)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Print the alert instead of sending it'
+        type: boolean
+        default: false
+      force:
+        description: 'Alert again on slots that were already reported'
+        type: boolean
+        default: false
+
+# Never let a slow run overlap with the next scheduled one.
+concurrency:
+  group: termin-alarm-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Slots already reported are remembered between runs, so a free
+      # appointment triggers one alert instead of one every 15 minutes.
+      - name: Restore alert history
+        uses: actions/cache/restore@v4
+        with:
+          path: .termin-alarm-state.json
+          key: termin-alarm-state-${{ github.run_id }}
+          restore-keys: termin-alarm-state-
+
+      - name: Check portals
+        env:
+          # Inputs go through the environment rather than into the command
+          # line, so nothing from the dispatch form is ever interpolated
+          # straight into a shell.
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FORCE: ${{ inputs.force }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          args=()
+          if [ -n "$INPUT_TARGET" ]; then args+=(--target "$INPUT_TARGET"); fi
+          if [ "$INPUT_DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
+          python -m termin_alarm "${args[@]}"
+
+      - name: Save alert history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .termin-alarm-state.json
+          key: termin-alarm-state-${{ github.run_id }}
