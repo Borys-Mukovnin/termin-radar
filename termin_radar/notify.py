@@ -142,8 +142,17 @@ class EmailNotifier:
             smtp.ehlo()
             smtp.starttls()
             smtp.login(self.user, self.password)
-            smtp.send_message(message)
-        log.info("e-mail sent to %s", ", ".join(self.recipients))
+            try:
+                smtp.send_message(message)
+            except smtplib.SMTPRecipientsRefused as exc:
+                # Its message lists every address; see the log note below.
+                raise RuntimeError(
+                    f"server refused all {len(exc.recipients)} recipient(s)"
+                ) from None
+        # Never log the addresses: Actions logs are public in a public repo, and
+        # GitHub only masks a secret's exact value, so a reformatted ALERT_TO
+        # list would appear in clear text.
+        log.info("e-mail sent to %d recipient(s)", len(self.recipients))
 
 
 class TelegramNotifier:
