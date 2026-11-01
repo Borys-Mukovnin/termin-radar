@@ -30,6 +30,8 @@ packages = ["termin_radar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Import the package from the checkout; CI runs plain `pytest` without installing it.
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.ruff]
