@@ -21,6 +21,11 @@ DEFAULT_DURATION = 0
 DEFAULT_APP_FUTURE = 30
 DEFAULT_APP_DEADLINE = 20
 
+TARGET_KEYS = frozenset({
+    "name", "portal_id", "service_id", "enabled", "account_id", "calendar_id",
+    "duration", "app_future", "app_deadline", "base_url", "info_url", "filters",
+})
+
 _WEEKDAY_NAMES = {
     "mon": 0, "monday": 0, "mo": 0,
     "tue": 1, "tuesday": 1, "di": 1,
@@ -133,33 +138,49 @@ def _parse_filters(raw: Any, key: str) -> SlotFilter:
     )
 
 
+def _check_keys(raw: dict[str, Any], where: str) -> None:
+    """Reject typos like ``app_futur`` instead of silently using the default."""
+    unknown = set(raw) - TARGET_KEYS
+    if unknown:
+        raise ConfigError(f"[{where}] unknown key(s): {', '.join(sorted(unknown))}")
+
+
+def _int_field(merged: dict[str, Any], name: str, default: int, key: str) -> int:
+    raw = merged.get(name, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"[{key}] {name} must be an integer, got {raw!r}") from exc
+
+
 def _build_target(key: str, raw: dict[str, Any], defaults: dict[str, Any]) -> Target:
+    _check_keys(raw, key)
     merged: dict[str, Any] = {**defaults, **raw}
 
     for required in ("name", "portal_id", "service_id"):
         if not merged.get(required):
             raise ConfigError(f"[{key}] missing required key: {required}")
 
-    try:
-        service_id = int(merged["service_id"])
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"[{key}] service_id must be an integer") from exc
+    enabled = merged.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"[{key}] enabled must be true or false, got {enabled!r}")
 
     account_id = merged.get("account_id")
     return Target(
         key=key,
         name=str(merged["name"]),
         portal_id=str(merged["portal_id"]),
-        service_id=service_id,
-        enabled=bool(merged.get("enabled", True)),
+        service_id=_int_field(merged, "service_id", 0, key),
+        enabled=enabled,
         account_id=str(account_id) if account_id not in (None, "") else None,
         calendar_id=str(merged.get("calendar_id", "")),
-        duration=int(merged.get("duration", DEFAULT_DURATION)),
-        app_future=int(merged.get("app_future", DEFAULT_APP_FUTURE)),
-        app_deadline=int(merged.get("app_deadline", DEFAULT_APP_DEADLINE)),
+        duration=_int_field(merged, "duration", DEFAULT_DURATION, key),
+        app_future=_int_field(merged, "app_future", DEFAULT_APP_FUTURE, key),
+        app_deadline=_int_field(merged, "app_deadline", DEFAULT_APP_DEADLINE, key),
         base_url=str(merged.get("base_url", "https://www.etermin.net")).rstrip("/"),
         info_url=merged.get("info_url") or None,
-        filters=_parse_filters(raw.get("filters"), key),
+        # Like every other key, a target's own filters table replaces the default one.
+        filters=_parse_filters(merged.get("filters"), key),
     )
 
 
@@ -168,6 +189,7 @@ def parse_targets(document: dict[str, Any]) -> dict[str, Target]:
     defaults = document.get("defaults", {})
     if not isinstance(defaults, dict):
         raise ConfigError("[defaults] must be a table")
+    _check_keys(defaults, "defaults")
 
     raw_targets = document.get("targets")
     if not isinstance(raw_targets, dict) or not raw_targets:
@@ -189,10 +211,15 @@ def load_targets(path: Path | str = DEFAULT_CONFIG_PATH) -> dict[str, Target]:
             f"config file not found: {path}\n"
             "Point --config at a targets file; see targets.toml in this repo."
         )
+    return load_targets_text(path.read_text(encoding="utf-8"), str(path))
+
+
+def load_targets_text(text: str, source: str) -> dict[str, Target]:
+    """Read and validate targets given as TOML text; ``source`` names it in errors."""
     try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
+        document = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"{path}: invalid TOML — {exc}") from exc
+        raise ConfigError(f"{source}: invalid TOML — {exc}") from exc
     return parse_targets(document)
 
 

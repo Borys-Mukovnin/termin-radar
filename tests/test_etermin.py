@@ -4,10 +4,12 @@ from dataclasses import replace
 from datetime import date, time
 
 import pytest
+import requests
 
-from termin_alarm.config import SlotFilter
-from termin_alarm.etermin import (
+from termin_radar.config import SlotFilter
+from termin_radar.etermin import (
     ETerminClient,
+    PortalError,
     Slot,
     group_by_day,
     month_query_dates,
@@ -24,14 +26,17 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise AssertionError("raise_for_status should not be reached in these tests")
+            raise requests.HTTPError(f"{self.status_code} Server Error")
 
     def json(self):
         return self._payload
 
 
 class FakeSession:
-    """Stands in for requests.Session: records calls, replays canned answers."""
+    """Stands in for requests.Session: records calls, replays canned answers.
+
+    An exception among the canned answers is raised instead of returned.
+    """
 
     def __init__(self, responses):
         self.responses = list(responses)
@@ -42,7 +47,10 @@ class FakeSession:
         self.calls.append({"method": "GET", "url": url, "params": params})
         if "/api/timeslots" not in url:
             return FakeResponse([])
-        return self.responses.pop(0) if self.responses else FakeResponse([])
+        answer = self.responses.pop(0) if self.responses else FakeResponse([])
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def post(self, url, params=None, headers=None, data=None, timeout=None):
         self.calls.append({"method": "POST", "url": url, "params": params})
@@ -175,6 +183,52 @@ def test_find_slots_applies_target_filters(target):
 
     slots = ETerminClient(filtered, session=session, delay=0).find_slots(today=date(2025, 5, 1))
     assert slots == [Slot(date(2025, 5, 5), "10:00")]
+
+
+def test_find_slots_reaches_past_the_plain_weekday_horizon_to_cover_holidays(target):
+    # 10 working days from Thu 1 May 2025 is Thu 15 May by a plain Mon-Fri
+    # count. A portal that skips public holidays reaches further than that, so
+    # a day just past the 15th must still be checked.
+    session = FakeSession([day_payload("2025-05-19"), slot_payload("2025-05-19", "08:00")])
+    client = ETerminClient(target, session=session, delay=0)
+
+    assert client.find_slots(today=date(2025, 5, 1)) == [Slot(date(2025, 5, 19), "08:00")]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [requests.ConnectionError("connection reset"), FakeResponse([], status_code=503)],
+    ids=["network-error", "server-error"],
+)
+def test_find_slots_reports_a_broken_portal_instead_of_an_empty_calendar(target, failure):
+    session = FakeSession([failure])
+    client = ETerminClient(target, session=session, delay=0)
+
+    with pytest.raises(PortalError):
+        client.find_slots(today=date(2025, 5, 1))
+
+
+def test_find_slots_keeps_the_days_that_worked_when_one_time_query_fails(target):
+    session = FakeSession([
+        day_payload("2025-05-05", "2025-05-06"),
+        requests.ConnectionError("connection reset"),
+        slot_payload("2025-05-06", "10:00"),
+    ])
+    client = ETerminClient(target, session=session, delay=0)
+
+    assert client.find_slots(today=date(2025, 5, 1)) == [Slot(date(2025, 5, 6), "10:00")]
+
+
+def test_find_slots_fails_when_every_time_query_fails(target):
+    session = FakeSession([
+        day_payload("2025-05-05", "2025-05-06"),
+        requests.ConnectionError("connection reset"),
+        FakeResponse([], status_code=500),
+    ])
+    client = ETerminClient(target, session=session, delay=0)
+
+    with pytest.raises(PortalError, match="all 2 day"):
+        client.find_slots(today=date(2025, 5, 1))
 
 
 def test_prime_uses_the_site_endpoint_when_an_account_id_is_known(target):

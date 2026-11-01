@@ -19,7 +19,7 @@ from email.message import EmailMessage
 from html import escape
 from typing import Protocol
 
-from termin_alarm.config import Target
+from termin_radar.config import Target
 
 log = logging.getLogger(__name__)
 
@@ -169,11 +169,13 @@ class TelegramNotifier:
         return cls(token, chat_id)
 
     def send(self, alert: Alert) -> None:
+        # HTML mode, escaped: in Markdown mode a lone "_" or "*" in a target
+        # name or URL makes Telegram reject the whole message.
         payload = urllib.parse.urlencode(
             {
                 "chat_id": self.chat_id,
-                "text": f"*{alert.subject}*\n\n{alert.text}",
-                "parse_mode": "Markdown",
+                "text": f"<b>{escape(alert.subject)}</b>\n\n{escape(alert.text)}",
+                "parse_mode": "HTML",
                 "disable_web_page_preview": "true",
             }
         ).encode()

@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Termin Alarm — watched services
+#  Termin Radar — watched services
 #
 #  Every [targets.<key>] block is one bookable service on one eTermin portal.
 #  <key> is what you pass to --target and is used in log output.
@@ -13,6 +13,10 @@
 #       app_future = the "appfuture" query parameter (booking horizon, workdays)
 #       account_id = the "z" parameter of the POST to /site (optional)
 #  See docs/adding-a-target.md for a walkthrough with screenshots of the values.
+#
+#  On GitHub Actions the repository variables TERMIN_TARGETS (which keys to
+#  check) and TERMIN_CONFIG (a whole replacement for this file) override it
+#  without a commit; see "Changing targets without a commit" in the README.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [defaults]

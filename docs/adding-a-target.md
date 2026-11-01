@@ -68,7 +68,7 @@ info_url     = "https://www.essen.de/..."
 ## 5. Check it
 
 ```bash
-python -m termin_alarm --target buergeramt_essen --dry-run --verbose
+python -m termin_radar --target buergeramt_essen --dry-run --verbose
 ```
 
 `--verbose` prints every phase, so you can tell the difference between *the

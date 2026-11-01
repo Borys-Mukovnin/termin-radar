@@ -2,14 +2,15 @@ name: Watch for appointments
 
 on:
   schedule:
-    # Every 15 minutes, 06:00-16:00 UTC, Mon-Fri (07:00-18:00 German time).
-    # Slots released by an office are often gone within minutes.
-    - cron: '*/15 6-16 * * 1-5'
+    # Every 15 minutes, around the clock, every day: offices release slots and
+    # cancellations come in at night and at weekends too, and they are often
+    # gone within minutes.
+    - cron: '*/15 * * * *'
 
   workflow_dispatch:
     inputs:
       target:
-        description: 'Target key to check (blank = every enabled target)'
+        description: 'Target key to check (blank = the TERMIN_TARGETS variable, else every enabled target)'
         required: false
         default: ''
       dry_run:
@@ -23,13 +24,16 @@ on:
 
 # Never let a slow run overlap with the next scheduled one.
 concurrency:
-  group: termin-alarm-watch
+  group: termin-radar-watch
   cancel-in-progress: false
 
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write  # to delete the superseded alert-history cache entry
 
     steps:
       - uses: actions/checkout@v4
@@ -45,11 +49,12 @@ jobs:
       # Slots already reported are remembered between runs, so a free
       # appointment triggers one alert instead of one every 15 minutes.
       - name: Restore alert history
+        id: restore
         uses: actions/cache/restore@v4
         with:
-          path: .termin-alarm-state.json
-          key: termin-alarm-state-${{ github.run_id }}
-          restore-keys: termin-alarm-state-
+          path: .termin-radar-state.json
+          key: termin-radar-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: termin-radar-state-
 
       - name: Check portals
         env:
@@ -59,6 +64,11 @@ jobs:
           INPUT_TARGET: ${{ inputs.target }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           INPUT_FORCE: ${{ inputs.force }}
+          # What to watch, changeable without a commit: repository variables
+          # (Settings -> Secrets and variables -> Actions -> Variables), or
+          # secrets of the same name. Unset = targets.toml / every enabled target.
+          TERMIN_CONFIG: ${{ vars.TERMIN_CONFIG || secrets.TERMIN_CONFIG }}
+          TERMIN_TARGETS: ${{ vars.TERMIN_TARGETS || secrets.TERMIN_TARGETS }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
@@ -69,11 +79,37 @@ jobs:
           if [ -n "$INPUT_TARGET" ]; then args+=(--target "$INPUT_TARGET"); fi
           if [ "$INPUT_DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
-          python -m termin_alarm "${args[@]}"
+          python -m termin_radar "${args[@]}"
 
       - name: Save alert history
+        id: save
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: .termin-alarm-state.json
-          key: termin-alarm-state-${{ github.run_id }}
+          path: .termin-radar-state.json
+          key: termin-radar-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Cache entries are immutable, so every run saves a new one. Once the new
+      # entry is confirmed, delete the one this run started from, so the cache
+      # holds one current copy instead of ~96 stale ones per day. Only on the
+      # default branch: a dispatch from another branch restores main's entry
+      # but saves into its own branch scope, and must not delete main's.
+      - name: Delete superseded alert history
+        if: >-
+          always()
+          && steps.save.outcome == 'success'
+          && steps.restore.outputs.cache-matched-key != ''
+          && steps.restore.outputs.cache-hit != 'true'
+          && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+          NEW_KEY: termin-radar-state-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if gh cache list --repo "$GITHUB_REPOSITORY" --key "$NEW_KEY" --json key --jq '.[].key' \
+               | grep -qxF "$NEW_KEY"; then
+            gh cache delete "$OLD_KEY" --repo "$GITHUB_REPOSITORY"
+          else
+            echo "new alert history not found in the cache; keeping $OLD_KEY"
+          fi

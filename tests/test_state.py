@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from termin_alarm.etermin import Slot
-from termin_alarm.state import SeenSlots
+from termin_radar.etermin import Slot
+from termin_radar.state import SeenSlots
 
 # Relative to today, because saving prunes anything already in the past.
 SOON = date.today() + timedelta(days=7)

@@ -25,7 +25,7 @@ from typing import Any
 
 import requests
 
-from termin_alarm.config import Target
+from termin_radar.config import Target
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +35,15 @@ USER_AGENT = (
 REQUEST_TIMEOUT = 15
 # Deliberate pacing: the portal is a public service, not a load-test victim.
 POLITE_DELAY = 0.4
+# eTermin counts its booking horizon in working days, and public holidays are
+# not working days. Holidays differ per state and are not tracked here, so the
+# scan reaches a few days past the plain Mon-Fri count instead of missing the
+# end of the real horizon whenever a holiday falls inside it.
+HOLIDAY_SLACK_DAYS = 5
+
+
+class PortalError(RuntimeError):
+    """The portal could not be queried, so "nothing free" cannot be trusted."""
 
 
 @dataclass(frozen=True)
@@ -176,7 +185,11 @@ class ETerminClient:
     # -- raw API -----------------------------------------------------------
 
     def _timeslots(self, params: dict[str, Any]) -> list[dict[str, Any]] | None:
-        """GET /api/timeslots. ``None`` means the portal cut the session off."""
+        """GET /api/timeslots. ``None`` means the portal cut the session off.
+
+        Raises :class:`PortalError` when there is no usable answer, so that an
+        outage is reported as a failure rather than as an empty calendar.
+        """
         try:
             response = self.session.get(
                 f"{self.target.base_url}/api/timeslots",
@@ -184,8 +197,7 @@ class ETerminClient:
                 timeout=REQUEST_TIMEOUT,
             )
         except requests.RequestException as exc:
-            log.warning("request failed: %s", exc)
-            return []
+            raise PortalError(f"request failed: {exc}") from exc
 
         # The portal answers 400 once a session has asked for too many months.
         # That is a stop signal, not a bug.
@@ -195,8 +207,7 @@ class ETerminClient:
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError) as exc:
-            log.warning("bad response from portal: %s", exc)
-            return []
+            raise PortalError(f"bad response from portal: {exc}") from exc
         return payload if isinstance(payload, list) else []
 
     def _common_params(self) -> dict[str, Any]:
@@ -245,7 +256,7 @@ class ETerminClient:
         """Two-phase search: which days have capacity, then at what times."""
         target = self.target
         today = today or date.today()
-        end_date = working_days_ahead(target.app_future, today)
+        end_date = working_days_ahead(target.app_future + HOLIDAY_SLACK_DAYS, today)
         probes = month_query_dates(end_date, today)
 
         log.info(
@@ -273,9 +284,18 @@ class ETerminClient:
             candidates.extend(kept)
             self._sleep(self.delay)
 
+        # A failed day is skipped rather than fatal: slots found on the other
+        # days are still worth an alert, and the skipped day is retried next run.
+        days_to_check = sorted(set(candidates))
+        failed_days = 0
         slots: list[Slot] = []
-        for day in sorted(set(candidates)):
-            times = [t for t in self.time_slots(day) if target.filters.accepts_time(t)]
+        for day in days_to_check:
+            try:
+                times = [t for t in self.time_slots(day) if target.filters.accepts_time(t)]
+            except PortalError as exc:
+                failed_days += 1
+                log.warning("%s: %s - %s", target.key, day.strftime("%a %d.%m.%Y"), exc)
+                continue
             log.info(
                 "%s: %s - %s",
                 target.key,
@@ -285,6 +305,8 @@ class ETerminClient:
             slots.extend(Slot(day, t) for t in times)
             self._sleep(0.3)
 
+        if days_to_check and failed_days == len(days_to_check):
+            raise PortalError(f"time query failed for all {failed_days} day(s) with capacity")
         return slots
 
 

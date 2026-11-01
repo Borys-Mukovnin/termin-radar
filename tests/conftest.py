@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from termin_alarm.config import Target
+from termin_radar.config import Target
 
 
 @pytest.fixture
