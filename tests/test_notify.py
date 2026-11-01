@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import smtplib
 import urllib.parse
 import urllib.request
 from dataclasses import replace
@@ -169,3 +170,59 @@ def test_telegram_message_is_sent_as_escaped_html(target, monkeypatch):
 def test_channels_satisfy_the_notifier_protocol(channel):
     assert callable(channel.send)
     assert isinstance(channel.name, str)
+
+
+class FakeSMTP:
+    """Stands in for smtplib.SMTP; ``refuse`` makes the server reject everyone."""
+
+    refuse = False
+
+    def __init__(self, host, port, timeout=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self):
+        pass
+
+    def login(self, user, password):
+        pass
+
+    def send_message(self, message):
+        if self.refuse:
+            raise smtplib.SMTPRecipientsRefused(
+                {addr: (550, b"no such user") for addr in ADDRESSES}
+            )
+
+
+ADDRESSES = ["first@example.org", "second@example.org"]
+
+
+def email_notifier():
+    return EmailNotifier("smtp.test", 587, "sender@example.org", "pw", ADDRESSES)
+
+
+def test_email_log_counts_recipients_instead_of_naming_them(monkeypatch, caplog):
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    caplog.set_level("INFO")
+
+    email_notifier().send(Alert("s", "t", "<p>h</p>"))
+
+    assert "e-mail sent to 2 recipient(s)" in caplog.text
+    assert not any(addr in caplog.text for addr in ADDRESSES)
+
+
+def test_refused_recipients_are_not_named_in_the_error(monkeypatch, caplog):
+    monkeypatch.setattr(smtplib, "SMTP", type("Refusing", (FakeSMTP,), {"refuse": True}))
+
+    assert deliver([email_notifier()], Alert("s", "t", "h")) == 0
+
+    assert "server refused all 2 recipient(s)" in caplog.text
+    assert not any(addr in caplog.text for addr in ADDRESSES)
