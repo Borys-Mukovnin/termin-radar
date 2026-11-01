@@ -1,9 +1,9 @@
-# Termin Alarm
+# Termin Radar
 
 **Watches German public-authority booking portals and alerts you the moment an appointment slot opens up.**
 
-[![CI](https://github.com/Borys-Mukovnin/termin-alarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Borys-Mukovnin/termin-alarm/actions/workflows/ci.yml)
-[![Watcher](https://github.com/Borys-Mukovnin/termin-alarm/actions/workflows/watch.yml/badge.svg)](https://github.com/Borys-Mukovnin/termin-alarm/actions/workflows/watch.yml)
+[![CI](https://github.com/Borys-Mukovnin/termin-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/Borys-Mukovnin/termin-radar/actions/workflows/ci.yml)
+[![Watcher](https://github.com/Borys-Mukovnin/termin-radar/actions/workflows/watch.yml/badge.svg)](https://github.com/Borys-Mukovnin/termin-radar/actions/workflows/watch.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -64,15 +64,15 @@ scanner stops as soon as the API signals it has had enough.
 ## Quick start
 
 ```bash
-git clone https://github.com/Borys-Mukovnin/termin-alarm.git
-cd termin-alarm
+git clone https://github.com/Borys-Mukovnin/termin-radar.git
+cd termin-radar
 pip install -r requirements.txt
 
 # What is being watched?
-python -m termin_alarm --list
+python -m termin_radar --list
 
 # Check now, print any hits instead of mailing them
-python -m termin_alarm --dry-run
+python -m termin_radar --dry-run
 ```
 
 Nothing is sent until you configure a channel, so `--dry-run` is safe to try
@@ -110,7 +110,9 @@ latest_time   = "15:30"
 | `enabled` | no | Set `false` to keep a target configured but skipped |
 
 A `[defaults]` table at the top applies to every target; a target can override
-any of it. **Adding a new office is a config change, not a code change** —
+any of it (a target's own `filters` table replaces the default one as a whole).
+Unknown keys are rejected rather than ignored, so a typo such as `app_futur`
+stops the run instead of quietly falling back to a default. **Adding a new office is a config change, not a code change** —
 [`docs/adding-a-target.md`](docs/adding-a-target.md) walks through finding the
 four values you need with the browser dev tools.
 
@@ -151,24 +153,51 @@ See [`.env.example`](.env.example) for a copy-paste starting point.
 ## Running it on GitHub Actions
 
 [`.github/workflows/watch.yml`](.github/workflows/watch.yml) runs the check
-every 15 minutes on weekday mornings and afternoons. To use it on your own fork:
+every 15 minutes, around the clock and at weekends — slots turn up at night
+too. To use it on your own fork:
 
 1. Add the variables above as repository secrets
    (*Settings → Secrets and variables → Actions*). Only the channels you
    actually want need secrets.
-2. Edit `targets.toml` and commit.
+2. Choose what to watch: edit `targets.toml` and commit, or set the repository
+   variables below to change it without a commit.
 3. Enable Actions on the fork. Trigger a first run by hand from the **Actions**
    tab — the dispatch form has *target*, *dry run* and *force* switches.
+
+### Changing targets without a commit
+
+Two optional repository **variables** (*Settings → Secrets and variables →
+Actions → Variables*) override the committed config on the next run:
+
+| Variable | Effect |
+| --- | --- |
+| `TERMIN_TARGETS` | Comma-separated target keys to check, e.g. `fahrerlaubnis`. Like `--target`, it also runs targets marked `enabled = false`, so `targets.toml` can hold a catalogue of offices and the variable picks from it. |
+| `TERMIN_CONFIG` | A complete targets file, pasted in as TOML. Used instead of `targets.toml`, for watching an office the repository does not know about. |
+
+A dispatch form's *target* field still wins over `TERMIN_TARGETS`. Secrets of
+the same names work too, but GitHub then masks their values in the logs, so
+variables are the more readable choice. Reported slots are remembered per
+office and service, so repointing a target at a different service alerts on
+that service's slots from scratch.
+
+At 96 runs a day, the schedule fits comfortably in a public repository, where
+Actions minutes are free. In a private one it uses around 2,900 minutes a
+month, more than the 2,000 included in the free plan; widen the cron interval
+in `watch.yml` if that matters.
 
 Every run writes a summary table to the run page, so the Actions tab doubles as
 a log of what was free and when:
 
-> **Termin Alarm** — *Checked 2025-05-05 09:15 (2 targets)*
+> **Termin Radar** — *Checked 2025-05-05 09:15 CEST (2 targets)*
 >
 > | Target | Free slots | New since last run | Portal |
 > | --- | ---: | ---: | --- |
 > | Niederlassungserlaubnis - Duisburg, ABH Sued | 0 | 0 | booking page |
 > | Fahrerlaubnis - Stadt Duisburg | 4 | 2 | booking page |
+
+If a portal cannot be reached or answers with an error, that target's row
+reads **check failed** and the run is marked as failed, so a broken target
+shows up as a red run instead of passing as an empty calendar.
 
 Two things to know about scheduled workflows: GitHub queues `schedule` runs on a
 best-effort basis, so an occasional run drifts by a few minutes, and it disables
@@ -178,26 +207,29 @@ dispatch re-enables them.
 ## Command line
 
 ```
-python -m termin_alarm [options]
+python -m termin_radar [options]
 
-  -c, --config PATH     targets file (default: targets.toml)
-  -t, --target KEY      only check this target; repeatable
+  -c, --config PATH     targets file (default: $TERMIN_CONFIG if set, else
+                        targets.toml)
+  -t, --target KEY      only check this target; repeatable (default: the keys
+                        in $TERMIN_TARGETS if set, else all enabled targets)
   -l, --list            show configured targets and exit
   -n, --dry-run         print alerts instead of sending them
-  -f, --force           re-alert on slots that were already reported
+  -f, --force           re-alert on slots that were already reported (and
+                        remember them, so the next normal run stays quiet)
       --state PATH      where to keep the seen-slots file
       --no-delay        skip the polite pauses between requests
   -v, --verbose         debug logging
   -q, --quiet           warnings only
 ```
 
-Installing the package (`pip install -e .`) also puts a `termin-alarm` command
+Installing the package (`pip install -e .`) also puts a `termin-radar` command
 on the path.
 
 ## Project layout
 
 ```
-termin_alarm/
+termin_radar/
   cli.py        argument parsing, run loop, GitHub job summary
   config.py     targets.toml -> validated Target objects
   etermin.py    the eTermin API client and its response parsers

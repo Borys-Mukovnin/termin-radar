@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "termin-alarm"
+name = "termin-radar"
 version = "1.0.0"
 description = "Watch German public-authority booking portals and get alerted the moment an appointment slot opens up."
 readme = "README.md"
@@ -23,10 +23,10 @@ dependencies = ["requests>=2.31"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
-termin-alarm = "termin_alarm.cli:main"
+termin-radar = "termin_radar.cli:main"
 
 [tool.setuptools]
-packages = ["termin_alarm"]
+packages = ["termin_radar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

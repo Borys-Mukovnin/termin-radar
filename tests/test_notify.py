@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import urllib.parse
+import urllib.request
+from dataclasses import replace
 from datetime import date
 
 import pytest
 
-from termin_alarm.notify import (
+from termin_radar.notify import (
     Alert,
     ConsoleNotifier,
     EmailNotifier,
@@ -35,8 +38,6 @@ def test_render_alert_html_links_to_the_booking_page(target):
 
 
 def test_render_alert_escapes_html_in_the_target_name(target):
-    from dataclasses import replace
-
     alert = render_alert(replace(target, name="<script>x</script>"), {MONDAY: ["09:00"]})
     assert "<script>" not in alert.html
     assert "&lt;script&gt;" in alert.html
@@ -133,6 +134,35 @@ def test_console_notifier_prints_the_alert(capsys):
     printed = capsys.readouterr().out
     assert "Subject line" in printed
     assert "Body line" in printed
+
+
+def test_telegram_message_is_sent_as_escaped_html(target, monkeypatch):
+    """Markdown mode would reject a name like this outright; HTML must escape it."""
+    sent = {}
+
+    class FakeHTTPResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(request, timeout=None):
+        sent.update(urllib.parse.parse_qs(request.data.decode()))
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    tricky = replace(target, name="ABH_Sued *neu* <Nord & Sued>")
+
+    TelegramNotifier("token", "42").send(render_alert(tricky, {MONDAY: ["09:00"]}))
+
+    assert sent["parse_mode"] == ["HTML"]
+    text = sent["text"][0]
+    assert text.startswith("<b>Termin frei: ABH_Sued *neu* &lt;Nord &amp; Sued&gt;")
+    assert "<Nord" not in text
 
 
 @pytest.mark.parametrize("channel", [EmailNotifier, TelegramNotifier])

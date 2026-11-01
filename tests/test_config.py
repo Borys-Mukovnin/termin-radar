@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 import tomllib
 from datetime import date, time
 
 import pytest
 
-from termin_alarm.config import (
+from termin_radar.config import (
     ConfigError,
     SlotFilter,
     load_targets,
@@ -64,12 +65,40 @@ def test_defaults_table_is_applied_and_overridable():
         ('[targets.a]\nportal_id = "p"\nservice_id = 1\n', "missing required key: name"),
         ('[targets.a]\nname = "A"\nservice_id = 1\n', "missing required key: portal_id"),
         ('[targets.a]\nname = "A"\nportal_id = "p"\nservice_id = "x"\n', "must be an integer"),
-        ("[defaults]\nx = 1\n", "no [targets.*] sections"),
+        ("[defaults]\nduration = 1\n", "no [targets.*] sections"),
+        (MINIMAL + "app_futur = 14\n", "[a] unknown key(s): app_futur"),
+        ("[defaults]\nbase_ulr = 'x'\n" + MINIMAL, "[defaults] unknown key(s): base_ulr"),
+        (MINIMAL + 'duration = "twenty"\n', "duration must be an integer, got 'twenty'"),
+        (MINIMAL + 'enabled = "false"\n', "enabled must be true or false"),
     ],
 )
 def test_invalid_config_is_rejected_with_a_useful_message(body, message):
-    with pytest.raises(ConfigError, match=message.replace("[", r"\[").replace("*", r"\*")):
+    with pytest.raises(ConfigError, match=re.escape(message)):
         parse(body)
+
+
+def test_filters_in_defaults_apply_unless_a_target_has_its_own():
+    targets = parse(
+        """
+        [defaults.filters]
+        weekdays = ["mon"]
+
+        [targets.a]
+        name = "A"
+        portal_id = "p-a"
+        service_id = 1
+
+        [targets.b]
+        name = "B"
+        portal_id = "p-b"
+        service_id = 2
+
+        [targets.b.filters]
+        earliest_time = "09:00"
+        """
+    )
+    assert targets["a"].filters.weekdays == frozenset({0})
+    assert targets["b"].filters == SlotFilter(earliest_time=time(9, 0))
 
 
 def test_unknown_filter_key_is_rejected():

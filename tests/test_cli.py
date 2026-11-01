@@ -4,8 +4,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from termin_alarm import cli
-from termin_alarm.etermin import Slot
+from termin_radar import cli
+from termin_radar.etermin import Slot
 
 CONFIG = """
 [targets.demo]
@@ -21,6 +21,13 @@ enabled = false
 """
 
 SOON = date.today() + timedelta(days=7)
+
+
+@pytest.fixture(autouse=True)
+def no_config_from_environment(monkeypatch):
+    """Keep a developer's own TERMIN_* variables out of the tests."""
+    monkeypatch.delenv(cli.CONFIG_ENV, raising=False)
+    monkeypatch.delenv(cli.TARGETS_ENV, raising=False)
 
 
 @pytest.fixture
@@ -127,6 +134,26 @@ def test_force_re_alerts_on_known_slots(config_file, found_slots, tmp_path, monk
     assert len(sent) == 2
 
 
+def test_slots_announced_by_force_are_not_announced_again(
+    config_file, found_slots, tmp_path, monkeypatch
+):
+    sent = []
+
+    class Recorder:
+        name = "recorder"
+
+        def send(self, alert):
+            sent.append(alert)
+
+    monkeypatch.setattr(cli, "build_notifiers", lambda: [Recorder()])
+    base = ["--config", str(config_file), "--no-delay", "--state", str(tmp_path / "state.json")]
+
+    cli.main([*base, "--force"])
+    cli.main(base)
+
+    assert len(sent) == 1, "the forced run must still record what it announced"
+
+
 def test_state_is_not_updated_when_every_channel_fails(
     config_file, found_slots, tmp_path, monkeypatch
 ):
@@ -160,6 +187,30 @@ def test_a_failing_target_does_not_abort_the_rest(config_file, tmp_path, monkeyp
     assert "portal on fire" in caplog.text
 
 
+def test_one_failing_target_fails_the_run_but_the_others_still_alert(
+    config_file, tmp_path, monkeypatch, capsys
+):
+    def find_slots(self, today=None):
+        if self.target.key == "demo":
+            raise RuntimeError("portal on fire")
+        return [Slot(SOON, "09:00")]
+
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(cli.ETerminClient, "find_slots", find_slots)
+
+    exit_code = cli.main(
+        ["--config", str(config_file), "--dry-run", "--no-delay",
+         "--target", "demo", "--target", "off"]
+    )
+
+    assert exit_code == cli.EXIT_ERROR, "a target that was not checked must not pass silently"
+    assert "Disabled Service" in capsys.readouterr().out, "the healthy target still alerts"
+    written = summary.read_text(encoding="utf-8")
+    assert "| Demo Service | **check failed** |" in written
+    assert "| Disabled Service | 1 | 1 |" in written
+
+
 def test_job_summary_is_written_when_running_in_github_actions(
     config_file, found_slots, tmp_path, monkeypatch
 ):
@@ -169,5 +220,83 @@ def test_job_summary_is_written_when_running_in_github_actions(
     cli.main(["--config", str(config_file), "--dry-run", "--no-delay"])
 
     written = summary.read_text(encoding="utf-8")
-    assert "## Termin Alarm" in written
+    assert "## Termin Radar" in written
     assert "Demo Service" in written
+
+
+# -- configuration from the environment (repository variables on Actions) ----
+
+
+def test_target_keys_can_come_from_the_environment(config_file, found_slots, monkeypatch):
+    monkeypatch.setenv(cli.TARGETS_ENV, " off , demo ")
+
+    cli.main(["--config", str(config_file), "--dry-run", "--no-delay"])
+
+    assert found_slots == ["off", "demo"], "like --target, it may name disabled targets"
+
+
+def test_command_line_targets_win_over_the_environment(config_file, found_slots, monkeypatch):
+    monkeypatch.setenv(cli.TARGETS_ENV, "off")
+
+    cli.main(["--config", str(config_file), "--dry-run", "--no-delay", "--target", "demo"])
+
+    assert found_slots == ["demo"]
+
+
+def test_unknown_target_key_in_the_environment_is_a_clean_error(
+    config_file, monkeypatch, caplog
+):
+    monkeypatch.setenv(cli.TARGETS_ENV, "nope")
+    assert cli.main(["--config", str(config_file), "--dry-run"]) == cli.EXIT_ERROR
+    assert "unknown target(s): nope" in caplog.text
+
+
+def test_whole_config_can_come_from_the_environment(found_slots, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)  # no targets.toml here, so the variable is all there is
+    monkeypatch.setenv(
+        cli.CONFIG_ENV,
+        '[targets.env_only]\nname = "From Variable"\nportal_id = "p"\nservice_id = 7\n',
+    )
+
+    assert cli.main(["--dry-run", "--no-delay"]) == cli.EXIT_OK
+    assert found_slots == ["env_only"]
+    assert "From Variable" in capsys.readouterr().out
+
+
+def test_config_file_flag_wins_over_the_environment(config_file, found_slots, monkeypatch):
+    monkeypatch.setenv(
+        cli.CONFIG_ENV, '[targets.env_only]\nname = "X"\nportal_id = "p"\nservice_id = 7\n'
+    )
+
+    cli.main(["--config", str(config_file), "--dry-run", "--no-delay"])
+
+    assert found_slots == ["demo"]
+
+
+def test_broken_config_in_the_environment_names_the_variable(monkeypatch, caplog):
+    monkeypatch.setenv(cli.CONFIG_ENV, "[targets.a\nname = ")
+    assert cli.main(["--dry-run"]) == cli.EXIT_ERROR
+    assert "$TERMIN_CONFIG: invalid TOML" in caplog.text
+
+
+def test_pointing_a_target_at_another_service_alerts_again(found_slots, tmp_path, monkeypatch):
+    """Same key, different service: old reports must not hide the new service's slots."""
+    sent = []
+
+    class Recorder:
+        name = "recorder"
+
+        def send(self, alert):
+            sent.append(alert)
+
+    monkeypatch.setattr(cli, "build_notifiers", lambda: [Recorder()])
+    state = ["--no-delay", "--state", str(tmp_path / "state.json")]
+    config = '[targets.fs]\nname = "FS"\nportal_id = "p"\nservice_id = {}\n'
+
+    monkeypatch.setenv(cli.CONFIG_ENV, config.format(1))
+    cli.main(state)
+    cli.main(state)
+    monkeypatch.setenv(cli.CONFIG_ENV, config.format(2))
+    cli.main(state)
+
+    assert len(sent) == 2, "one alert per service, none for the repeat run"

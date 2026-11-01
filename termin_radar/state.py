@@ -14,11 +14,11 @@ from collections.abc import Iterable, Sequence
 from datetime import date
 from pathlib import Path
 
-from termin_alarm.etermin import Slot
+from termin_radar.etermin import Slot
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STATE_PATH = Path(".termin-alarm-state.json")
+DEFAULT_STATE_PATH = Path(".termin-radar-state.json")
 
 
 def _slot_id(slot: Slot) -> str:

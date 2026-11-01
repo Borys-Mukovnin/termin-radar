@@ -34,4 +34,4 @@ jobs:
       # Proves the config in the repo is loadable and the CLI starts up,
       # without touching the network or any credentials.
       - name: Smoke test the CLI
-        run: python -m termin_alarm --list
+        run: python -m termin_radar --list
